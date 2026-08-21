@@ -5,6 +5,7 @@ Main entry point: Runs in Report-Only by default, supports --enforce.
 """
 
 import argparse
+import base64
 import platform
 import subprocess
 import sys
@@ -23,21 +24,45 @@ from mitigations.enforcer import enforce_safeguards_and_suspend
 
 console = Console()
 
-def trigger_desktop_alert(process_name: str, pid: int, score: float, action: str):
-    title = f"AEGIS ALERT: Threat Detected ({score:.1f}%)"
-    message = f"Process: {process_name} (PID: {pid})\nAction: {action}"
-    escaped_title = title.replace("'", "''")
-    escaped_message = message.replace("'", "''")
+def trigger_interactive_alert(process_name: str, pid: int, score: float):
+    process_name_b64 = base64.b64encode(process_name.encode("utf-8")).decode("ascii")
     ps_cmd = f"""
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
-    $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
-    $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
-    $text = $xml.GetElementsByTagName('text')
-    $text[0].AppendChild($xml.CreateTextNode('{escaped_title}')) > $null
-    $text[1].AppendChild($xml.CreateTextNode('{escaped_message}')) > $null
-    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Aegis Defense Engine')
-    $notification = [Windows.UI.Notifications.ToastNotification]::new($xml)
-    $notifier.Show($notification)
+    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null
+
+    $processName = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{process_name_b64}'))
+    $template = @"
+    <toast duration=""long"">
+        <visual>
+            <binding template=""ToastGeneric"">
+                <text>AEGIS ALERT: Threat Detected ({score:.1f}%)</text>
+                <text>Process: $processName (PID: {pid})</text>
+                <text>Suspicious process activity detected. Choose an action.</text>
+            </binding>
+        </visual>
+        <actions>
+            <action content=""Terminate Process"" arguments=""terminate_{pid}"" activationType=""foreground""/>
+            <action content=""Ignore / Allow"" arguments=""ignore_{pid}"" activationType=""background""/>
+        </actions>
+    </toast>
+"@
+
+    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $xml.LoadXml($template)
+    $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+
+    Register-ObjectEvent -InputObject $toast -EventName Activated -Action {{
+        param($sender, $args)
+        $argument = $args.Arguments
+        if ($argument -like ""terminate_*"") {{
+            $targetPid = [int]$argument.Split('_')[1]
+            Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
+        }}
+    }} | Out-Null
+
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(""Aegis Runtime Defense"")
+    $notifier.Show($toast)
+    Start-Sleep -Seconds 15
     """
 
     def notify():
@@ -45,7 +70,7 @@ def trigger_desktop_alert(process_name: str, pid: int, score: float, action: str
             subprocess.run(
                 ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
                 creationflags=0x08000000,
-                timeout=5,
+                timeout=20,
                 check=False
             )
         except (OSError, subprocess.SubprocessError):
@@ -94,11 +119,10 @@ def make_event_handler(evaluator: AIEvaluator, db: AuditDatabase, enforcement_en
             db.log_event(event, score, is_anomaly=True, status=status)
 
             if event.os_type.lower() == "windows":
-                trigger_desktop_alert(
+                trigger_interactive_alert(
                     process_name=event.process_name,
                     pid=event.pid,
-                    score=score * 100,
-                    action="SUSPENDED_PROCESS_ACTIVE" if enforcement_enabled else "REPORT_ONLY_LOGGED"
+                    score=score * 100
                 )
 
             mode_tag = "[bold red][ENFORCING][/bold red]" if enforcement_enabled else "[bold yellow][REPORT-ONLY][/bold yellow]"
