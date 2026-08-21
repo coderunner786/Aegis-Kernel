@@ -6,7 +6,9 @@ Main entry point: Runs in Report-Only by default, supports --enforce.
 
 import argparse
 import platform
+import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from datetime import datetime
@@ -20,6 +22,36 @@ from core.security import SecurityError
 from mitigations.enforcer import enforce_safeguards_and_suspend
 
 console = Console()
+
+def trigger_desktop_alert(process_name: str, pid: int, score: float, action: str):
+    title = f"AEGIS ALERT: Threat Detected ({score:.1f}%)"
+    message = f"Process: {process_name} (PID: {pid})\nAction: {action}"
+    escaped_title = title.replace("'", "''")
+    escaped_message = message.replace("'", "''")
+    ps_cmd = f"""
+    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+    $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
+    $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+    $text = $xml.GetElementsByTagName('text')
+    $text[0].AppendChild($xml.CreateTextNode('{escaped_title}')) > $null
+    $text[1].AppendChild($xml.CreateTextNode('{escaped_message}')) > $null
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Aegis Defense Engine')
+    $notification = [Windows.UI.Notifications.ToastNotification]::new($xml)
+    $notifier.Show($notification)
+    """
+
+    def notify():
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                creationflags=0x08000000,
+                timeout=5,
+                check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    threading.Thread(target=notify, daemon=True).start()
 
 def run_preflight_tests() -> bool:
     console.print("[bold cyan][*] Running pre-flight security test suite...[/bold cyan]")
@@ -60,6 +92,14 @@ def make_event_handler(evaluator: AIEvaluator, db: AuditDatabase, enforcement_en
                 status = "REPORT_ONLY_ANOMALY_NOTED"
 
             db.log_event(event, score, is_anomaly=True, status=status)
+
+            if event.os_type.lower() == "windows":
+                trigger_desktop_alert(
+                    process_name=event.process_name,
+                    pid=event.pid,
+                    score=score * 100,
+                    action="SUSPENDED_PROCESS_ACTIVE" if enforcement_enabled else "REPORT_ONLY_LOGGED"
+                )
 
             mode_tag = "[bold red][ENFORCING][/bold red]" if enforcement_enabled else "[bold yellow][REPORT-ONLY][/bold yellow]"
             console.print(Panel.fit(
