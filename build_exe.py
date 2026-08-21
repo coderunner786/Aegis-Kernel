@@ -1,73 +1,77 @@
+import os
+import sys
+import psutil
 import PyInstaller.__main__
-import importlib.util
-from pathlib import Path
+
+
+def ensure_output_is_not_running(output_path):
+    output_path = os.path.normcase(os.path.abspath(output_path))
+    running_processes = []
+
+    for process in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            process_path = process.info.get("exe")
+            if process_path and os.path.normcase(os.path.abspath(process_path)) == output_path:
+                running_processes.append(f"{process.info['name']} (PID {process.info['pid']})")
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+
+    if running_processes:
+        processes = ", ".join(running_processes)
+        raise RuntimeError(
+            f"Cannot rebuild because {processes} is running and locking {output_path}. "
+            "Stop the running Aegis-Guard process, then run this command again."
+        )
+
 
 def build():
-    print("[*] Starting Aegis standalone executable compilation...")
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(project_root)
+    public_key_path = os.path.join(project_root, ".aegis_pubkey.pem")
+    dashboard_path = os.path.join(project_root, "dashboard.html")
+    vis_network_path = os.path.join(project_root, "vis-network.min.js")
+    output_path = os.path.join(project_root, "dist", "Aegis-Guard.exe")
 
-    project_root = Path(__file__).resolve().parent
-    model_path = project_root / "models/isolation_forest.pkl"
-    sig_path = project_root / "models/isolation_forest.pkl.sig"
-    pubkey_path = project_root / ".aegis_pubkey.pem"
+    for required_path, description in (
+        (public_key_path, "Public verification key"),
+        (dashboard_path, "Dashboard HTML"),
+        (vis_network_path, "Offline dashboard library"),
+    ):
+        if not os.path.isfile(required_path):
+            raise FileNotFoundError(f"{description} is missing: {required_path}")
+    ensure_output_is_not_running(output_path)
 
-    # Verify build prerequisites
-    if not model_path.exists() or not sig_path.exists():
-        raise FileNotFoundError(
-            "Signed model is missing. Run train_model.py on the trusted build machine first."
-        )
+    # On Windows, PyInstaller expects 'source_file;destination_folder'
+    data_separator = ";" if os.name == "nt" else ":"
 
-    if not pubkey_path.exists():
-        raise FileNotFoundError(
-            "Public verification key is missing. Generate signing material on the trusted build machine first."
-        )
-
-    # Data bundle mapping (source;destination on Windows)
-    datas = [
-        f"{model_path};models",
-        f"{sig_path};models",
-        f"{pubkey_path};.",
-        f"{project_root / 'tests'};tests",
-    ]
-
-    # Explicit hidden imports for dynamic libraries
-    hidden_imports = [
-        'cryptography',
-        'sklearn',
-        'sklearn.ensemble',
-        'sklearn.tree',
-        'sklearn.neighbors',
-        'pydantic',
-        'rich',
-        'rich.console',
-        'rich.panel',
-        'rich.table',
-        'sqlite3'
-    ]
-    if importlib.util.find_spec('wmi'):
-        hidden_imports.extend(['wmi', 'win32com', 'win32com.client', 'pythoncom'])
-    if importlib.util.find_spec('psutil'):
-        hidden_imports.append('psutil')
-
+    # Base flags
     args = [
-        str(project_root / 'aegis_main.py'),
-        '--name=Aegis-Guard',
-        '--onefile',
-        '--console',
-        '--clean',
-        f'--distpath={project_root / "dist"}',
-        f'--workpath={project_root / "build"}',
-        f'--specpath={project_root}',
+        os.path.join(project_root, "aegis_main.py"),
+        "--name=Aegis-Guard",
+        "--onefile",
+        "--clean",
+        "--noconfirm",
+        "--collect-submodules=sklearn",
+        f"--add-data={dashboard_path}{data_separator}.",
+        f"--add-data={public_key_path}{data_separator}.",
+        f"--distpath={os.path.join(project_root, 'dist')}",
+        f"--workpath={os.path.join(project_root, 'build')}",
+        f"--specpath={project_root}",
+        f"--add-data={vis_network_path}{data_separator}.",
     ]
 
-    for d in datas:
-        args.append(f'--add-data={d}')
+    # Include models folder if it exists in root
+    if os.path.isdir("models"):
+        args.append(f"--add-data={os.path.join(project_root, 'models')}{data_separator}models")
 
-    for imp in hidden_imports:
-        args.append(f'--hidden-import={imp}')
+    # Include tests folder if it exists in root
+    if os.path.isdir("tests"):
+        args.append(f"--add-data={os.path.join(project_root, 'tests')}{data_separator}tests")
 
+    print("[*] Starting PyInstaller compilation with bundled SOC dashboard...")
     PyInstaller.__main__.run(args)
-    print("\n[✓] Aegis standalone executable built successfully!")
-    print(r"[✓] Executable output location: dist\Aegis-Guard.exe")
+    print("\n[✓] Build completed successfully: dist/Aegis-Guard.exe")
+
 
 if __name__ == "__main__":
     build()

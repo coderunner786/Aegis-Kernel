@@ -1,35 +1,50 @@
-﻿# Virtual Environment
+﻿# ==========================================
+# Virtual Environments
+# ==========================================
 .venv/
 venv/
 ENV/
 env/
 
+# ==========================================
 # Python Cache & Bytecode
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.spec
 
+# ==========================================
 # PyInstaller Build Artifacts & Zips
+# ==========================================
 build/
 dist/
 Aegis-Release/
 Aegis-v1.0-Release/
 *.zip
 
+# ==========================================
 # Local Runtime Audit & Forensic Data
+# ==========================================
 *.db
 *.db-wal
 *.db-shm
 *.jsonl
 aegis_audit.db
 
-# CRITICAL: Cryptographic Private Key (Never commit build secrets!)
+# ==========================================
+# CRITICAL: Cryptographic Private Keys & Secrets
+# ==========================================
 .aegis_privkey.pem
 *.pem.priv
 secrets/
+*.pem
+*.key
+!.aegis_pubkey.pem
 
-# OS / Editor Specific
+# ==========================================
+# OS / Editor Specific Files
+# ==========================================
 .vscode/
 .idea/
 .DS_Store
